@@ -104,11 +104,13 @@ export function findTime(text: string): string | null {
   return null;
 }
 
-export function suggestReminderForDueDate(dueISO: string): { date: string; time: string } {
+export function suggestReminderForDueDate(
+  dueISO: string,
+  referenceDate: Date = new Date()
+): { date: string; time: string } {
   const due = parseISO(dueISO);
   const suggested = subDays(due, 2);
-  const floor = new Date();
-  const date = isBefore(suggested, floor) ? toISODate(due) : toISODate(suggested);
+  const date = isBefore(suggested, referenceDate) ? toISODate(due) : toISODate(suggested);
   return { date, time: '09:00' };
 }
 
@@ -127,6 +129,58 @@ export function suggestReminderForEvent(
     return { date, time: `${String(hour).padStart(2, '0')}:${String(m).padStart(2, '0')}` };
   }
   return { date: toISODate(subDays(parseISO(eventISO), 1)), time: '18:00' };
+}
+
+/**
+ * Finds a relative date phrase ("tomorrow", "next Monday", "next week",
+ * "in 3 days") and resolves it against a reference date. Returns null if
+ * nothing matches — this only handles the specific phrasings above, it
+ * never guesses at a date that wasn't actually written.
+ */
+export function findRelativeDate(text: string, referenceDate: Date = new Date()): string | null {
+  const lower = text.toLowerCase();
+
+  if (/\btoday\b/.test(lower)) return toISODate(referenceDate);
+  if (/\btomorrow\b/.test(lower)) return toISODate(addDays(referenceDate, 1));
+
+  const inNDays = lower.match(/\bin\s+(\d+)\s+days?\b/);
+  if (inNDays) return toISODate(addDays(referenceDate, parseInt(inNDays[1], 10)));
+
+  const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const nextWeekday = lower.match(/\bnext\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
+  if (nextWeekday) {
+    // Colloquial "next Monday" = the closest upcoming Monday. If today IS
+    // Monday, that means next week's Monday, not today.
+    const targetDay = WEEKDAYS.indexOf(nextWeekday[1]);
+    const currentDay = referenceDate.getDay();
+    let delta = targetDay - currentDay;
+    if (delta <= 0) delta += 7;
+    return toISODate(addDays(referenceDate, delta));
+  }
+
+  const thisWeekday = lower.match(/\bthis\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
+  if (thisWeekday) {
+    const targetDay = WEEKDAYS.indexOf(thisWeekday[1]);
+    const currentDay = referenceDate.getDay();
+    let delta = targetDay - currentDay;
+    if (delta < 0) delta += 7;
+    return toISODate(addDays(referenceDate, delta));
+  }
+
+  if (/\bnext week\b/.test(lower)) return toISODate(addDays(referenceDate, 7));
+
+  return null;
+}
+
+/**
+ * Finds a natural or relative date in free text (e.g. "September 12",
+ * "tomorrow", "next Monday", "in 3 days") and returns it as an ISO date.
+ * Relative phrases are tried first since they're unambiguous once a
+ * reference date is known; falls through to `findNaturalDate` for
+ * "Month Day" style dates. Returns null if nothing matches.
+ */
+export function findAnyDate(text: string, referenceDate: Date = new Date()): string | null {
+  return findRelativeDate(text, referenceDate) ?? findNaturalDate(text, referenceDate);
 }
 
 export function isOverdue(dueISO: string): boolean {

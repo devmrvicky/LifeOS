@@ -5,8 +5,10 @@ import type { Capture, ReminderEvent, Task } from '../types';
 // Local-first storage. This mirrors the `captures` / `tasks` /
 // `reminder_events` tables in supabase/schema.sql field-for-field, so a
 // future sync layer is a straight upsert in both directions rather than a
-// remodel. See README "Local-first + sync" for how a signed-in user's data
-// would reconcile with Supabase.
+// remodel.
+//
+// Nothing outside this file and src/lib/storage/ talks to idb directly —
+// see src/repositories/ for the domain-facing API the rest of the app uses.
 // ---------------------------------------------------------------------------
 
 interface LifeOSDB extends DBSchema {
@@ -51,47 +53,8 @@ export function getDB(): Promise<IDBPDatabase<LifeOSDB>> {
   return dbPromise;
 }
 
-export const captureRepo = {
-  async put(capture: Capture) {
-    const db = await getDB();
-    await db.put('captures', capture);
-  },
-  async all(): Promise<Capture[]> {
-    const db = await getDB();
-    const items = await db.getAllFromIndex('captures', 'by-created');
-    return items.reverse();
-  },
-};
-
-export const taskRepo = {
-  async put(task: Task) {
-    const db = await getDB();
-    await db.put('tasks', task);
-  },
-  async delete(id: string) {
-    const db = await getDB();
-    await db.delete('tasks', id);
-  },
-  async all(): Promise<Task[]> {
-    const db = await getDB();
-    return db.getAll('tasks');
-  },
-};
-
-export const reminderEventRepo = {
-  async put(event: ReminderEvent) {
-    const db = await getDB();
-    await db.put('reminder_events', event);
-  },
-  async forTask(taskId: string): Promise<ReminderEvent[]> {
-    const db = await getDB();
-    return db.getAllFromIndex('reminder_events', 'by-task', taskId);
-  },
-};
-
-export async function clearAllData(): Promise<void> {
-  const db = await getDB();
-  await db.clear('captures');
-  await db.clear('tasks');
-  await db.clear('reminder_events');
-}
+export const STORE_NAMES = {
+  captures: 'captures',
+  tasks: 'tasks',
+  reminderEvents: 'reminder_events',
+} as const;

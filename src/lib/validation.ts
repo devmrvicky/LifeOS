@@ -22,6 +22,7 @@ export const extractedTaskSchema = z.object({
   currency: z.string().max(6).nullable(),
   due_date: isoDate,
   event_date: isoDate,
+  event_time: isoTime,
   reminder_date: isoDate,
   reminder_time: isoTime,
   priority: z.enum(['low', 'medium', 'high']).nullable(),

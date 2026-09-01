@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { Task, TaskCategory, TaskPriority } from '../types';
-import { taskRepo } from '../lib/db';
+import { taskRepository } from '../repositories';
 import { getLocalUserId } from '../lib/localUser';
 import { analytics } from '../services/analyticsService';
 import { todayISO } from '../utils/dateUtils';
@@ -12,6 +12,7 @@ export interface NewTaskInput {
   amount: number | null;
   currency: string | null;
   event_date: string | null;
+  event_time: string | null;
   due_date: string | null;
   reminder_date: string | null;
   reminder_time: string | null;
@@ -37,7 +38,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   loaded: false,
 
   async load() {
-    const tasks = await taskRepo.all();
+    const tasks = await taskRepository.all();
     set({ tasks: tasks.filter((t) => t.status !== 'deleted'), loaded: true });
   },
 
@@ -53,6 +54,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       amount: input.amount,
       currency: input.currency,
       event_date: input.event_date,
+      event_time: input.event_time,
       due_date: input.due_date,
       reminder_date: input.reminder_date,
       reminder_time: input.reminder_time,
@@ -65,7 +67,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       updated_at: now,
       completed_at: null,
     };
-    await taskRepo.put(task);
+    await taskRepository.put(task);
     set({ tasks: [task, ...get().tasks] });
     analytics.track('task_created', { category: task.category, has_reminder: !!task.reminder_date });
     if (task.reminder_date) {
@@ -78,7 +80,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     const existing = get().tasks.find((t) => t.id === id);
     if (!existing) return;
     const updated: Task = { ...existing, ...patch, updated_at: new Date().toISOString() };
-    await taskRepo.put(updated);
+    await taskRepository.put(updated);
     set({ tasks: get().tasks.map((t) => (t.id === id ? updated : t)) });
     analytics.track('task_edited', { task_id: id });
   },
@@ -92,7 +94,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       completed_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    await taskRepo.put(updated);
+    await taskRepository.put(updated);
     set({ tasks: get().tasks.map((t) => (t.id === id ? updated : t)) });
     analytics.track('task_completed', { task_id: id });
   },
@@ -101,7 +103,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     const existing = get().tasks.find((t) => t.id === id);
     if (!existing) return;
     const updated: Task = { ...existing, status: 'deleted', updated_at: new Date().toISOString() };
-    await taskRepo.put(updated);
+    await taskRepository.put(updated);
     set({ tasks: get().tasks.filter((t) => t.id !== id) });
     analytics.track('task_deleted', { task_id: id });
   },

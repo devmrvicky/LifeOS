@@ -176,3 +176,53 @@ trust it to remember for them?
 - [x] Demo/seed data, clearly separated (`demo-` id prefix, only loaded from Settings)
 - [x] `npm run build` and `npm run test` both verified green
 - [ ] Two-user data isolation (scenario 7) — not testable in Phase 1 since there is no auth/backend yet; the schema's RLS policies (`supabase/schema.sql`) are what will enforce it once sync ships
+
+---
+
+## Phase 1.1 — Engineering Upgrade
+
+### Audit summary (as required before changes)
+
+**Current architecture (Phase 1 baseline):** React 19 + Vite + Tailwind, IndexedDB-only storage accessed directly by stores, single local rule-based extraction provider, no server component.
+
+**What was working:** the full capture → confirm → remind loop, file/OCR/PDF handling, validation, error states, demo data.
+
+**What was incomplete:** no server-side AI (Phase 1 could only ever be as good as a regex parser), no repository abstraction (stores talked to IndexedDB directly), `event_time` was conflated with `reminder_time`, no relative-date parsing, no PWA manifest/service worker, unlinked form labels.
+
+**What changed:**
+- Added `server/` — a real Express extraction API backed by the Anthropic SDK, with file security, error classification, and a fallback-safe contract.
+- Added `src/repositories/` + `src/lib/storage/` — a `StorageAdapter` interface between the UI and IndexedDB.
+- `AIService` now composes a primary provider (remote LLM, when configured) with the local engine as an automatic one-shot fallback.
+- Added `event_time` as its own field, separate from `reminder_time`.
+- Added relative-date parsing ("tomorrow", "next Monday", "in 3 days") resolved against an explicit reference date.
+- Added a PWA manifest, real generated icons, and a service worker that caches the app shell only — never the extraction API.
+- Linked every form `<label>` to its input; added `aria-label`s to icon-only interactive elements.
+
+**What did NOT change:** the core loop, the UI design system/tokens, the local extraction engine's category naming (kept as the original plurals — see `src/types/index.ts` for why), IndexedDB as the Phase 1 store, and everything explicitly out of scope (no WhatsApp/email/calendar integration, no family accounts, no habit tracker, etc.).
+
+### Running the server extraction API
+
+```bash
+cd server
+cp .env.example .env   # then edit .env and add a real ANTHROPIC_API_KEY — never commit this file
+cd ..
+npm run server          # starts on :8787
+```
+
+Then set `VITE_EXTRACTION_ENDPOINT=http://localhost:8787/api/extract` in a `.env` at the project root before `npm run dev`/`build`, so the frontend's `RemoteLLMProvider` picks it up. Leave it unset to keep using the local engine only (Phase 1 behavior).
+
+**Genuinely verified, not just unit-tested:** the server was actually started and hit over real HTTP in this environment, including one real network round-trip to `api.anthropic.com` — which correctly failed on an invalid test key and was cleanly remapped to a 503 with no leaked internals. File-security rejection of a spoofed-extension upload was verified live (415). A real `ANTHROPIC_API_KEY` was never available in this environment, so an actual successful extraction call has not been verified — that's the one thing to check first when you add your own key.
+
+### A caught bug worth knowing about
+
+The extraction prompt originally never told the model to return `source_type`, but the shared validation schema required it — every real extraction would have failed validation. Caught by the test suite (not by inspection), fixed by having the server inject `source_type` from the request itself rather than trusting the model to echo it back. Server and frontend validation schemas are duplicated by design (see `server/schema.ts`), not shared, since this is two separate build targets without a workspace set up — a deliberate simplicity trade-off per the "don't over-engineer an MVP" instruction, but it does mean the two must be kept in sync by hand.
+
+### Dependency note
+
+`dotenv`'s CLI output prints a random promotional "tip" line on every load (e.g. `tip: ⌘ enable debugging`). One of these, observed during testing, referenced a domain unrelated to dotenv's own product. It wasn't acted on or visited. Worth a quick look at `dotenv`'s changelog/issues before relying on it in production, independent of anything else in this codebase.
+
+### Known gaps carried forward
+
+- No successful end-to-end LLM extraction has been verified (no real API key available here).
+- Vision/PDF-document extraction (Step 8/9) sends the file directly to the model as an image/document content block rather than degrading through OCR first, per the spec's preference — this is implemented but, like the above, unverified against a live key.
+- PWA service worker covers the app shell only; AI processing (either provider) still requires network, and this is stated plainly in the UI/README rather than hidden.

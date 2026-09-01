@@ -3,7 +3,7 @@ import { ListChecks } from 'lucide-react';
 import { useTaskStore } from '../store/taskStore';
 import { TaskRow } from '../components/TaskRow';
 import { EmptyState } from '../components/EmptyState';
-import { taskRepo } from '../lib/db';
+import { taskRepository } from '../repositories';
 import type { Task } from '../types';
 
 export default function TasksPage() {
@@ -17,7 +17,7 @@ export default function TasksPage() {
 
   useEffect(() => {
     if (showCompleted) {
-      taskRepo.all().then((all) => setCompleted(all.filter((t) => t.status === 'completed')));
+      taskRepository.all().then((all) => setCompleted(all.filter((t) => t.status === 'completed')));
     }
   }, [showCompleted, tasks]);
 

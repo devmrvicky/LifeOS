@@ -1,22 +1,22 @@
 import type { ExtractedTaskData, SourceType, TaskCategory } from '../types';
 import {
-  findNaturalDate,
+  findAnyDate,
   findTime,
   suggestReminderForDueDate,
   suggestReminderForEvent,
-  todayISO,
+  toISODate,
 } from '../utils/dateUtils';
 
 // ---------------------------------------------------------------------------
 // This is LifeOS's Phase 1 "local" extraction engine: a genuine rule-based
 // parser (not a canned/hard-coded response — output depends entirely on the
 // input text). It exists so the full Capture → Understand → Confirm → Remind
-// loop works end-to-end with no backend or API key.
+// loop still works end-to-end even with no network or server available.
 //
-// It is intentionally isolated behind the AIProvider interface in
-// aiService.ts so it can be swapped for a real LLM-backed provider later
-// without touching any UI or store code. See README.md "Enabling a
-// production AI provider" for exactly what that swap requires.
+// Phase 1.1: this is now the FALLBACK provider — LocalRuleBasedProvider is
+// used automatically when the server extraction API is unreachable or
+// unconfigured (see aiService.ts). It is intentionally isolated behind the
+// AIProvider interface so neither the UI nor the stores know which one ran.
 // ---------------------------------------------------------------------------
 
 const CATEGORY_KEYWORDS: [TaskCategory, RegExp][] = [
@@ -29,7 +29,7 @@ const CATEGORY_KEYWORDS: [TaskCategory, RegExp][] = [
   ['personal', /\b(birthday|anniversary|dinner|party|gift)\b/i],
 ];
 
-const DUE_KEYWORDS = /\b(due|deadline|pay by|last date|payable by|expires on|renew by)\b/i;
+const DUE_KEYWORDS = /\b(due|deadline|pay by|last date|payable by|expires on|expires|renew by)\b/i;
 const EVENT_KEYWORDS = /\b(appointment|scheduled|meeting|departure|boarding|starts at|on\s)\b/i;
 const NO_ACTION_KEYWORDS = /\b(happy birthday|congratulations|thank you|thanks|good morning|good night|lol|haha)\b/i;
 
@@ -66,10 +66,21 @@ function titleFromText(text: string, category: TaskCategory): string {
   return fallback[category];
 }
 
-export function extractFromText(text: string, sourceType: SourceType): ExtractedTaskData {
+/**
+ * @param referenceDate "Today" as far as extraction is concerned — always
+ * passed explicitly (never read from `new Date()` deep inside) so relative
+ * phrases like "tomorrow" or "in 3 days" resolve correctly and so the
+ * function is deterministic in tests.
+ */
+export function extractFromText(
+  text: string,
+  sourceType: SourceType,
+  referenceDate: Date = new Date()
+): ExtractedTaskData {
   const trimmed = text.trim();
+  const todayISOValue = toISODate(referenceDate);
 
-  const dateFound = findNaturalDate(trimmed);
+  const dateFound = findAnyDate(trimmed, referenceDate);
   const timeFound = findTime(trimmed);
   const { amount, currency } = detectAmount(trimmed);
   const category = detectCategory(trimmed);
@@ -79,15 +90,18 @@ export function extractFromText(text: string, sourceType: SourceType): Extracted
 
   let due_date: string | null = null;
   let event_date: string | null = null;
+  let event_time: string | null = null;
 
   if (dateFound) {
     if (hasEventSignal && !hasDueSignal) {
       event_date = dateFound;
+      event_time = timeFound;
     } else if (hasDueSignal) {
       due_date = dateFound;
     } else if (timeFound) {
       // A specific time with no due-language reads as an event, not a deadline.
       event_date = dateFound;
+      event_time = timeFound;
     } else {
       due_date = dateFound;
     }
@@ -105,6 +119,7 @@ export function extractFromText(text: string, sourceType: SourceType): Extracted
       currency: null,
       due_date: null,
       event_date: null,
+      event_time: null,
       reminder_date: null,
       reminder_time: null,
       priority: null,
@@ -117,18 +132,18 @@ export function extractFromText(text: string, sourceType: SourceType): Extracted
   let reminder_date: string | null = null;
   let reminder_time: string | null = null;
   if (due_date) {
-    const r = suggestReminderForDueDate(due_date);
+    const r = suggestReminderForDueDate(due_date, referenceDate);
     reminder_date = r.date;
     reminder_time = r.time;
   } else if (event_date) {
-    const r = suggestReminderForEvent(event_date, timeFound);
+    const r = suggestReminderForEvent(event_date, event_time);
     reminder_date = r.date;
     reminder_time = r.time;
   }
 
-  const targetDate = due_date ?? event_date ?? todayISO();
+  const targetDate = due_date ?? event_date ?? todayISOValue;
   const daysAway = Math.round(
-    (new Date(targetDate).getTime() - new Date(todayISO()).getTime()) / 86_400_000
+    (new Date(`${targetDate}T00:00:00`).getTime() - new Date(`${todayISOValue}T00:00:00`).getTime()) / 86_400_000
   );
   const priority = amount && amount > 5000 ? 'high' : daysAway <= 2 ? 'high' : daysAway <= 7 ? 'medium' : 'low';
 
@@ -147,8 +162,9 @@ export function extractFromText(text: string, sourceType: SourceType): Extracted
     currency,
     due_date,
     event_date,
+    event_time,
     reminder_date,
-    reminder_time: event_date ? timeFound ?? reminder_time : reminder_time,
+    reminder_time,
     priority,
     recurring: false,
     confidence: Math.round(confidence * 100) / 100,

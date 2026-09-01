@@ -1,0 +1,16 @@
+{
+  "name": "LifeOS — Don't remember it, just give it to LifeOS",
+  "short_name": "LifeOS",
+  "description": "Capture screenshots, PDFs, and text — LifeOS turns them into reminders you won't forget.",
+  "start_url": "/",
+  "id": "/",
+  "display": "standalone",
+  "background_color": "#FAF9F6",
+  "theme_color": "#2B6E62",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

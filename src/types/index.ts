@@ -29,6 +29,11 @@ export type ProcessingStatus =
 
 // The strict shape the AI extraction layer must return. Every field the
 // model didn't find comes back as `null`, never omitted and never guessed.
+//
+// Category naming note (Phase 1.1): the plural forms below ('bills',
+// 'appointments', ...) are the original Phase 1 naming and are kept as-is —
+// they're already wired through the UI, seed data, and IndexedDB records,
+// and renaming them is a pure cosmetic churn with no functional upside.
 export interface ExtractedTaskData {
   has_actionable_information: boolean;
   title: string | null;
@@ -38,6 +43,7 @@ export interface ExtractedTaskData {
   currency: string | null;
   due_date: string | null; // ISO YYYY-MM-DD
   event_date: string | null; // ISO YYYY-MM-DD
+  event_time: string | null; // HH:mm, 24h — the event's own time, distinct from the suggested reminder time
   reminder_date: string | null; // ISO YYYY-MM-DD
   reminder_time: string | null; // HH:mm, 24h
   priority: TaskPriority | null;
@@ -68,6 +74,7 @@ export interface Task {
   amount: number | null;
   currency: string | null;
   event_date: string | null;
+  event_time: string | null;
   due_date: string | null;
   reminder_date: string | null;
   reminder_time: string | null;
@@ -96,8 +103,10 @@ export type AnalyticsEvent =
   | 'app_opened'
   | 'capture_started'
   | 'capture_uploaded'
+  | 'capture_processing'
   | 'ai_extraction_success'
   | 'ai_extraction_failed'
+  | 'capture_confirmed'
   | 'task_created'
   | 'task_edited'
   | 'task_completed'
@@ -110,6 +119,9 @@ export interface AppError {
     | 'file_too_large'
     | 'ocr_failed'
     | 'ai_failed'
+    | 'ai_unavailable'
+    | 'ai_timeout'
+    | 'ai_rate_limited'
     | 'invalid_ai_response'
     | 'missing_date'
     | 'no_actionable_information'

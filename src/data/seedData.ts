@@ -1,5 +1,5 @@
 import type { Task } from '../types';
-import { taskRepo } from '../lib/db';
+import { taskRepository } from '../repositories';
 import { getLocalUserId } from '../lib/localUser';
 import { addDays, toISODate } from '../utils/dateUtils';
 
@@ -32,6 +32,7 @@ export function buildDemoTasks(): Task[] {
       amount: 1850,
       currency: 'INR',
       event_date: null,
+      event_time: null,
       due_date: toISODate(today),
       reminder_date: toISODate(addDays(today, -1)),
       reminder_time: '09:00',
@@ -45,6 +46,7 @@ export function buildDemoTasks(): Task[] {
       amount: 2400,
       currency: 'INR',
       event_date: null,
+      event_time: null,
       due_date: toISODate(addDays(today, 18)),
       reminder_date: toISODate(addDays(today, 15)),
       reminder_time: '09:00',
@@ -58,6 +60,7 @@ export function buildDemoTasks(): Task[] {
       amount: null,
       currency: null,
       event_date: toISODate(addDays(today, 21)),
+      event_time: '18:00',
       due_date: null,
       reminder_date: toISODate(addDays(today, 20)),
       reminder_time: '18:00',
@@ -71,6 +74,7 @@ export function buildDemoTasks(): Task[] {
       amount: null,
       currency: null,
       event_date: null,
+      event_time: null,
       due_date: toISODate(addDays(today, 2)),
       reminder_date: toISODate(addDays(today, 1)),
       reminder_time: '09:00',
@@ -84,10 +88,25 @@ export function buildDemoTasks(): Task[] {
       amount: null,
       currency: null,
       event_date: toISODate(addDays(today, 9)),
+      event_time: '18:00',
       due_date: null,
       reminder_date: toISODate(addDays(today, 8)),
       reminder_time: '18:00',
       priority: 'medium',
+      recurring: false,
+    }),
+    demoTask({
+      title: 'Passport Renewal',
+      description: 'Passport expires soon — renew before travel plans are affected',
+      category: 'documents',
+      amount: null,
+      currency: null,
+      event_date: null,
+      event_time: null,
+      due_date: toISODate(addDays(today, 45)),
+      reminder_date: toISODate(addDays(today, 30)),
+      reminder_time: '09:00',
+      priority: 'low',
       recurring: false,
     }),
   ];
@@ -96,15 +115,15 @@ export function buildDemoTasks(): Task[] {
 export async function loadDemoData(): Promise<void> {
   const tasks = buildDemoTasks();
   for (const task of tasks) {
-    await taskRepo.put(task);
+    await taskRepository.put(task);
   }
 }
 
 export async function clearDemoData(): Promise<void> {
-  const all = await taskRepo.all();
+  const all = await taskRepository.all();
   for (const task of all) {
     if (task.id.startsWith('demo-')) {
-      await taskRepo.delete(task.id);
+      await taskRepository.delete(task.id);
     }
   }
 }

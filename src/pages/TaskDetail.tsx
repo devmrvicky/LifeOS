@@ -30,6 +30,7 @@ export default function TaskDetailPage() {
         currency: task.currency ?? '',
         due_date: task.due_date ?? '',
         event_date: task.event_date ?? '',
+        event_time: task.event_time ?? '',
         reminder_date: task.reminder_date ?? '',
         reminder_time: task.reminder_time ?? '',
         priority: task.priority,
@@ -62,6 +63,7 @@ export default function TaskDetailPage() {
       currency: form.amount ? form.currency || 'INR' : null,
       due_date: form.due_date || null,
       event_date: form.event_date || null,
+      event_time: form.event_time || null,
       reminder_date: form.reminder_date || null,
       reminder_time: form.reminder_time || null,
       priority: form.priority,
@@ -109,7 +111,7 @@ export default function TaskDetailPage() {
 
           <div className="mt-4 space-y-3 rounded-2xl border bg-surface px-4 py-3 text-sm" style={{ borderColor: 'var(--color-line)' }}>
             {task.due_date && <DetailRow label="Due" value={formatISODateLong(task.due_date)} />}
-            {task.event_date && <DetailRow label="Event" value={`${formatISODateLong(task.event_date)}${task.reminder_time ? ` · ${formatTime12h(task.reminder_time)}` : ''}`} />}
+            {task.event_date && <DetailRow label="Event" value={`${formatISODateLong(task.event_date)}${task.event_time ? ` · ${formatTime12h(task.event_time)}` : ''}`} />}
             {task.reminder_date && <DetailRow label="Reminder" value={`${formatISODateLong(task.reminder_date)}${task.reminder_time ? ` · ${formatTime12h(task.reminder_time)}` : ''}`} />}
             <DetailRow label="Priority" value={task.priority[0].toUpperCase() + task.priority.slice(1)} />
             {task.source_type && <DetailRow label="Source" value={task.source_type[0].toUpperCase() + task.source_type.slice(1)} />}

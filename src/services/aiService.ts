@@ -2,6 +2,7 @@ import type { ExtractedTaskData, SourceType } from '../types';
 import { validateExtraction } from '../lib/validation';
 import { extractFromText } from './textExtractor';
 import { extractTextFromImage, extractTextFromPdf } from './fileTextExtractor';
+import { todayISO } from '../utils/dateUtils';
 
 export interface AIExtractionInput {
   sourceType: SourceType;
@@ -14,6 +15,10 @@ export interface AIExtractionResult {
   data: ExtractedTaskData | null;
   rawText: string | null; // the text that was actually fed to extraction (for the "original_text" capture field)
   errors: string[];
+  /** Which provider actually produced this result — surfaced in Settings for transparency. */
+  servedBy: string;
+  /** True when the primary (server/LLM) provider failed and the local engine answered instead. */
+  usedFallback: boolean;
 }
 
 /**
@@ -27,11 +32,12 @@ export interface AIProvider {
 }
 
 /**
- * Phase 1 default provider. Runs OCR/PDF-text-extraction and a rule-based
+ * Local fallback provider. Runs OCR/PDF-text-extraction and a rule-based
  * parser entirely in the browser — genuinely reads the input and returns
  * real structured data, not a fixed canned response. No network call, no
- * API key, no backend required. See README for how to swap this for a
- * production LLM provider.
+ * API key required. Used automatically (Step 14) whenever the server
+ * extraction API is unreachable, misconfigured, or fails — so LifeOS never
+ * makes the user fully dependent on AI/network availability.
  */
 export class LocalRuleBasedProvider implements AIProvider {
   readonly name = 'local-rule-based';
@@ -52,12 +58,19 @@ export class LocalRuleBasedProvider implements AIProvider {
   }
 }
 
+export class RemoteExtractionError extends Error {
+  code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
 /**
- * Production provider stub. Phase 1 ships with this DISABLED — calling it
- * throws a clear configuration error rather than pretending to work. Wiring
- * it up requires a server-side function (never call a model provider with a
- * secret key directly from the browser) — see README "Enabling a production
- * AI provider".
+ * Talks to the server extraction API (server/app.ts — POST /api/extract),
+ * which is the only place with a model provider API key. This provider
+ * itself never sees a secret: it just posts the capture and reads back
+ * validated JSON or a clean {error, message} body.
  */
 export class RemoteLLMProvider implements AIProvider {
   readonly name = 'remote-llm';
@@ -68,37 +81,73 @@ export class RemoteLLMProvider implements AIProvider {
 
   async extractActionableInformation(input: AIExtractionInput): Promise<unknown> {
     if (!this.endpoint) {
-      throw new Error(
-        'RemoteLLMProvider is not configured. Set VITE_EXTRACTION_ENDPOINT to a server ' +
-        'route that calls the model with a server-side API key, then pass that endpoint here.'
+      throw new RemoteExtractionError(
+        'not_configured',
+        'No extraction server is configured (VITE_EXTRACTION_ENDPOINT is unset).'
       );
     }
     const body = new FormData();
     body.append('sourceType', input.sourceType);
+    body.append('currentDateISO', todayISO());
     if (input.text) body.append('text', input.text);
     if (input.file) body.append('file', input.file);
 
-    const res = await fetch(this.endpoint, { method: 'POST', body });
-    if (!res.ok) throw new Error(`extraction endpoint returned ${res.status}`);
+    let res: Response;
+    try {
+      res = await fetch(this.endpoint, { method: 'POST', body });
+    } catch {
+      throw new RemoteExtractionError('network_failed', 'Could not reach the extraction server.');
+    }
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: 'unknown', message: 'Extraction server error.' }));
+      throw new RemoteExtractionError(body.error ?? 'unknown', body.message ?? 'Extraction server error.');
+    }
     return res.json();
   }
 }
 
 export class AIService {
-  private provider: AIProvider;
-  constructor(provider: AIProvider) {
-    this.provider = provider;
+  private primary: AIProvider;
+  private fallback: AIProvider | null;
+
+  constructor(primary: AIProvider, fallback: AIProvider | null = null) {
+    this.primary = primary;
+    this.fallback = fallback;
   }
 
   get providerName(): string {
-    return this.provider.name;
+    return this.primary.name;
   }
 
   async extractActionableInformation(input: AIExtractionInput): Promise<AIExtractionResult> {
+    const primaryAttempt = await this.tryProvider(this.primary, input);
+    if (primaryAttempt.ok) {
+      return { ...primaryAttempt.result, servedBy: this.primary.name, usedFallback: false };
+    }
+
+    // Step 14: fall back to the local engine exactly once — never an
+    // endless retry loop — so the user isn't fully dependent on the
+    // server/AI provider being reachable.
+    if (this.fallback && this.fallback !== this.primary) {
+      const fallbackAttempt = await this.tryProvider(this.fallback, input);
+      if (fallbackAttempt.ok) {
+        return { ...fallbackAttempt.result, servedBy: this.fallback.name, usedFallback: true };
+      }
+      return { ...fallbackAttempt.result, servedBy: this.fallback.name, usedFallback: true };
+    }
+
+    return { ...primaryAttempt.result, servedBy: this.primary.name, usedFallback: false };
+  }
+
+  private async tryProvider(
+    provider: AIProvider,
+    input: AIExtractionInput
+  ): Promise<{ ok: boolean; result: Omit<AIExtractionResult, 'servedBy' | 'usedFallback'> }> {
     let rawResult: unknown;
     let rawText: string | null = null;
     try {
-      const result = await this.provider.extractActionableInformation(input);
+      const result = await provider.extractActionableInformation(input);
       if (result && typeof result === 'object' && 'raw' in (result as any)) {
         rawResult = (result as any).raw;
         rawText = (result as any).rawText ?? null;
@@ -106,27 +155,29 @@ export class AIService {
         rawResult = result;
       }
     } catch (err) {
-      return {
-        ok: false,
-        data: null,
-        rawText: null,
-        errors: [err instanceof Error ? err.message : 'AI extraction failed'],
-      };
+      const message =
+        err instanceof RemoteExtractionError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'AI extraction failed';
+      return { ok: false, result: { ok: false, data: null, rawText: null, errors: [message] } };
     }
 
     const validated = validateExtraction(rawResult);
     return {
       ok: validated.ok,
-      data: validated.data,
-      rawText,
-      errors: validated.errors,
+      result: { ok: validated.ok, data: validated.data, rawText, errors: validated.errors },
     };
   }
 }
 
-// Phase 1 default wiring. Swap the provider here (not throughout the app)
-// to move to a production LLM backend once VITE_EXTRACTION_ENDPOINT exists.
+// Phase 1.1 default wiring: prefer the server/LLM extraction API when
+// VITE_EXTRACTION_ENDPOINT is configured, with the local rule-based engine
+// as an automatic fallback either way. Nothing downstream (stores, UI)
+// knows or cares which one actually answered a given capture.
 const remoteEndpoint = import.meta.env.VITE_EXTRACTION_ENDPOINT as string | undefined;
-export const aiService = new AIService(
-  remoteEndpoint ? new RemoteLLMProvider(remoteEndpoint) : new LocalRuleBasedProvider()
-);
+const localProvider = new LocalRuleBasedProvider();
+export const aiService = remoteEndpoint
+  ? new AIService(new RemoteLLMProvider(remoteEndpoint), localProvider)
+  : new AIService(localProvider, null);

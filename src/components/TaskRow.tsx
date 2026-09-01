@@ -10,7 +10,7 @@ function metaLine(task: Task): string {
   }
   const date = task.due_date ?? task.event_date;
   if (date) {
-    const time = formatTime12h(task.reminder_time ?? null);
+    const time = formatTime12h(task.event_date ? task.event_time : null);
     parts.push(task.due_date ? `Due ${formatISODateShort(date)}` : formatISODateShort(date));
     if (time && task.event_date) parts.push(time);
   }
@@ -26,8 +26,10 @@ export function TaskRow({ task }: { task: Task }) {
       to={`/tasks/${task.id}`}
       className="flex items-center gap-3 border-b py-3.5 last:border-b-0"
       style={{ borderColor: 'var(--color-line)' }}
+      aria-label={`${task.title}${task.priority === 'high' ? ', high priority' : ''}`}
     >
       <span
+        aria-hidden="true"
         className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
         style={{ backgroundColor: meta.soft, color: meta.color }}
       >
@@ -38,7 +40,7 @@ export function TaskRow({ task }: { task: Task }) {
         <span className="block truncate text-xs text-ink-soft">{metaLine(task) || meta.label}</span>
       </span>
       {task.priority === 'high' && (
-        <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: 'var(--color-urgent)' }} />
+        <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: 'var(--color-urgent)' }} />
       )}
     </Link>
   );

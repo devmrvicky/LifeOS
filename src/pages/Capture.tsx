@@ -6,12 +6,13 @@ import { useTaskStore, type NewTaskInput } from '../store/taskStore';
 import { ConfirmationCard, type ConfirmationFormValue } from '../components/ConfirmationCard';
 import { ErrorState } from '../components/ErrorState';
 import { TaskFieldsForm, BLANK_TASK_FORM, type TaskFormValue } from '../components/TaskFieldsForm';
+import { analytics } from '../services/analyticsService';
 
 type Mode = 'choose' | 'text-input' | 'manual';
 
 export default function CapturePage() {
   const navigate = useNavigate();
-  const { status, currentCapture, error, runCapture, reset } = useCaptureStore();
+  const { status, currentCapture, error, usedFallback, runCapture, reset } = useCaptureStore();
   const createTask = useTaskStore((s) => s.createTask);
 
   const [mode, setMode] = useState<Mode>('choose');
@@ -39,6 +40,7 @@ export default function CapturePage() {
   }
 
   async function handleConfirm(value: ConfirmationFormValue) {
+    analytics.track('capture_confirmed', { capture_id: currentCapture?.id ?? null });
     const task = await create(value, currentCapture?.id ?? null, currentCapture?.source_type ?? null, currentCapture?.extracted?.confidence ?? null);
     reset();
     navigate(`/tasks/${task.id}`);
@@ -66,6 +68,7 @@ export default function CapturePage() {
       currency: v.amount ? v.currency || 'INR' : null,
       due_date: v.due_date || null,
       event_date: v.event_date || null,
+      event_time: v.event_time || null,
       reminder_date: v.reminder_date || null,
       reminder_time: v.reminder_time || null,
       priority: v.priority,
@@ -135,6 +138,11 @@ export default function CapturePage() {
   if (status === 'success' && currentCapture?.extracted) {
     return (
       <Screen title="Review">
+        {usedFallback && (
+          <p className="mb-3 rounded-lg px-3 py-2 text-xs text-ink-soft" style={{ backgroundColor: 'var(--color-accent-soft)' }}>
+            The AI service wasn't reachable, so this was understood on-device instead — worth a closer look.
+          </p>
+        )}
         <ConfirmationCard
           extraction={currentCapture.extracted}
           confidence={currentCapture.extracted.confidence}

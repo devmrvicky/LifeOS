@@ -14,6 +14,7 @@ function toFormValue(data: ExtractedTaskData): ConfirmationFormValue {
     currency: data.currency ?? (data.amount != null ? 'INR' : ''),
     due_date: data.due_date ?? '',
     event_date: data.event_date ?? '',
+    event_time: data.event_time ?? '',
     reminder_date: data.reminder_date ?? '',
     reminder_time: data.reminder_time ?? '',
     priority: data.priority ?? 'medium',
@@ -27,12 +28,20 @@ interface ConfirmationCardProps {
   onDiscard: () => void;
 }
 
+// Step 12: never hide uncertainty from the user — the copy itself tells
+// them how much scrutiny this extraction deserves.
+function confidenceNotice(confidence: number): string | null {
+  if (confidence >= 0.75) return null;
+  if (confidence >= 0.5) return 'Please review these details carefully.';
+  return "I'm not confident I understood this correctly. Please review the information before creating a reminder.";
+}
+
 export function ConfirmationCard({ extraction, confidence, onConfirm, onDiscard }: ConfirmationCardProps) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState<ConfirmationFormValue>(toFormValue(extraction));
 
   const meta = CATEGORY_META[value.category];
-  const lowConfidence = confidence < 0.6;
+  const notice = confidenceNotice(confidence);
 
   if (!editing) {
     return (
@@ -48,7 +57,10 @@ export function ConfirmationCard({ extraction, confidence, onConfirm, onDiscard 
         </div>
         <div className="space-y-3 px-5 py-4 text-sm">
           {(value.due_date || value.event_date) && (
-            <Row label={value.due_date ? 'Due' : 'When'} value={formatDatePretty(value.due_date || value.event_date, value.event_date ? value.reminder_time : '')} />
+            <Row
+              label={value.due_date ? 'Due' : 'When'}
+              value={formatDatePretty(value.due_date || value.event_date, value.event_date ? value.event_time : '')}
+            />
           )}
           {value.reminder_date && (
             <Row label="Suggested reminder" value={formatDatePretty(value.reminder_date, value.reminder_time)} accent />
@@ -61,9 +73,13 @@ export function ConfirmationCard({ extraction, confidence, onConfirm, onDiscard 
               </span>
             }
           />
-          {lowConfidence && (
-            <p className="rounded-lg px-3 py-2 text-xs text-ink-soft" style={{ backgroundColor: 'var(--color-accent-soft)' }}>
-              I'm not fully sure about this one — worth a quick check before you confirm.
+          {notice && (
+            <p
+              role="status"
+              className="rounded-lg px-3 py-2 text-xs text-ink-soft"
+              style={{ backgroundColor: confidence < 0.5 ? 'var(--color-urgent-soft)' : 'var(--color-accent-soft)' }}
+            >
+              {notice}
             </p>
           )}
         </div>
@@ -92,7 +108,7 @@ export function ConfirmationCard({ extraction, confidence, onConfirm, onDiscard 
 
   return (
     <div className="space-y-4 rounded-2xl border bg-surface p-5" style={{ borderColor: 'var(--color-line)' }}>
-      <TaskFieldsForm value={value} onChange={setValue} />
+      <TaskFieldsForm value={value} onChange={setValue} idPrefix="confirm" />
       <div className="flex gap-2 pt-1">
         <button onClick={() => setEditing(false)} className="flex-1 rounded-full border py-2.5 text-sm font-medium text-ink" style={{ borderColor: 'var(--color-line)' }}>
           Back

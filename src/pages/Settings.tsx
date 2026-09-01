@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { Bell, Database, Trash2, Info } from 'lucide-react';
 import { useTaskStore } from '../store/taskStore';
 import { loadDemoData, clearDemoData } from '../data/seedData';
-import { clearAllData } from '../lib/db';
+import { clearAllData } from '../repositories';
 import { notifier } from '../services/notificationService';
 import { aiService } from '../services/aiService';
 
