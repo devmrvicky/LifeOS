@@ -1,0 +1,9 @@
+{
+  "name": "@lifeos/shared",
+  "private": true,
+  "version": "1.2.0",
+  "type": "module",
+  "dependencies": {
+    "zod": "^4.5.4"
+  }
+}

@@ -226,3 +226,166 @@ The extraction prompt originally never told the model to return `source_type`, b
 - No successful end-to-end LLM extraction has been verified (no real API key available here).
 - Vision/PDF-document extraction (Step 8/9) sends the file directly to the model as an image/document content block rather than degrading through OCR first, per the spec's preference — this is implemented but, like the above, unverified against a live key.
 - PWA service worker covers the app shell only; AI processing (either provider) still requires network, and this is stated plainly in the UI/README rather than hidden.
+
+---
+
+## Phase 1.2 — Architecture Separation + Free AI Provider
+
+### Audit summary (as required before changes)
+
+**Current structure (Phase 1.1 baseline):** a single npm package at the repo root mixing frontend (`src/`) and server (`server/`) code and dependencies together; `server/schema.ts` duplicated the frontend's validation schema by hand; Anthropic was the only AI backend and required a paid key just to run the project at all.
+
+**Problems:** no independent deployability for frontend vs. server; a paid API key was a hard requirement for anyone trying the project; the duplicated schema had already caused one real bug in Phase 1.1 (caught by tests, not by review).
+
+**Files that moved:** everything under `src/` → `frontend/src/`; `public/`, `index.html`, `vite.config.ts`, and the frontend `tsconfig*.json` → `frontend/`; the flat `server/*.ts` files → a layered `server/src/{routes,controllers,services,validators,middleware,utils}/` structure; the extraction schema and all shared types → `shared/`.
+
+**Files that stayed:** the core product loop, the UI design system, IndexedDB as local storage, `supabase/schema.sql`, the local rule-based extraction engine (still the frontend's automatic fallback).
+
+**Architecture after refactor:**
+
+```
+frontend  →  POST /api/extract  →  server  →  AIProvider (OpenRouter | Anthropic)
+                                       │
+                                       ├── OCR (server-side, text-only-model fallback)
+                                       └── PDF text extraction
+```
+
+The frontend never sees a provider name, a model name, or a key — only `shared/types/api.ts`'s `ApiResponse` envelope.
+
+**Potential breaking changes:** the `/api/extract` response shape changed from a bare object to `{success, data}` / `{success, error}` — the frontend's `extractionApi.ts` was updated to match. `event_time` field naming, task/capture data model, and all UI behavior are unchanged.
+
+### Folder structure
+
+```
+lifeos/
+├── frontend/     # React/Vite UI — no AI keys, no provider knowledge, calls /api/extract only
+├── server/       # Express API — the only place with API keys, provider selection, OCR/PDF processing
+├── shared/       # Types + zod schema — the single source both sides import (npm workspace package)
+└── supabase/     # Future sync schema (unused by Phase 1.2 itself)
+```
+
+### AI provider
+
+**Default: OpenRouter**, specifically the `openrouter/free` auto-router, which picks an available free model and — per OpenRouter's own docs — automatically prefers one that supports image input when a request needs it. No paid key required to run Phase 1.2 end to end. Get a free key at https://openrouter.ai/keys.
+
+The server depends on `AIProvider` (`server/src/services/ai/AIProvider.ts`), never on OpenRouter specifically — `providerFactory.ts` is the one place that reads `AI_PROVIDER` from the environment and picks an implementation. Anthropic is still available (`AI_PROVIDER=anthropic`, paid, optional) behind the exact same interface. Adding Gemini or OpenAI later is one new file plus one new branch in `providerFactory.ts` — nothing else changes.
+
+If the configured model can't accept images, `OPENROUTER_TEXT_ONLY=true` routes images through server-side OCR (`services/ocr/`) first. PDFs always get their text extracted server-side (`services/pdf/`) before reaching any provider, since OpenRouter's chat-completions API has no native document input the way Anthropic's does.
+
+### Local setup
+
+```bash
+npm install                          # installs all three workspaces from the root
+cp server/.env.example server/.env   # then add a free OPENROUTER_API_KEY — never commit this file
+npm run dev                          # starts server + frontend together
+```
+
+Or run them separately: `npm run dev:server` / `npm run dev:frontend`.
+
+### Genuinely verified, not just claimed
+
+The restructured server was actually started and hit over real HTTP after the refactor — health check, CORS (both an allowed origin correctly reflected and a disallowed one correctly rejected), and one real network round-trip to OpenRouter with an invalid test key, which correctly failed and was cleanly remapped to `AI_UNAVAILABLE`/503 with no leaked internals. 49 automated tests pass across both workspaces (`npm test` from the root). A real `OPENROUTER_API_KEY` was never available in this environment, so an actual successful extraction call is still unverified — check that first once you add your own free key.
+
+Two real bugs were caught by tooling during this refactor, not by inspection: `shared/` had no `node_modules` of its own, so `zod` failed to resolve until the project became proper npm workspaces (hoisting shared deps to the root); and Vitest doesn't read TypeScript's `paths` config the way `tsx` does, so the server needed its own explicit `vitest.config.ts` alias for `@shared` even though `tsc` and `tsx` already had it working.
+
+### Known gaps carried forward
+
+- Scanned/image-only PDFs return a clear, honest error asking for an image upload instead — true scanned-PDF support would need a PDF-to-image rendering dependency (poppler/pdfium) that wasn't added, per the "don't add unnecessary tooling" instruction for this phase.
+- `ReminderService` (`server/src/services/reminders/`) is an interface-level placeholder — nothing calls it yet. Reminders are still created and stored entirely client-side in IndexedDB, same as Phase 1.1.
+- As in Phase 1.1: real push notifications, and PWA offline shell only (AI processing always requires network) — see the Phase 1.1 section above for what production push would require.
+
+---
+
+## Phase 1.2.1 — Reliability, Scanned PDF Fallback, AI Robustness
+
+### Audit summary (as required before changes)
+
+**Working correctly:** frontend/server separation, OpenRouter as the default free provider, provider abstraction, text extraction, image extraction (vision-first with OCR fallback for text-only models), 401/429/5xx/timeout classification, one-retry policy, manual task creation, CORS, no secret exposure.
+
+**Problems found:**
+1. Scanned/image-only PDFs simply failed with an error asking the user to upload an image instead — no real OCR fallback existed yet, despite being flagged as a known gap.
+2. The `pdf-parse` npm package threw `bad XRef entry` on a perfectly valid, freshly-generated PDF during testing for this phase — a real reliability bug, not a hypothetical one.
+3. Server-side OCR (tesseract.js) depended on a runtime fetch to `cdn.jsdelivr.net` for language data — an unnecessary external dependency for something that should work offline once deployed.
+4. The retry policy retried authentication failures (401/invalid key) exactly like transient server errors — wasting a call on something that will never succeed on retry, contrary to this phase's own Step 6.
+5. A message/regex mismatch in the frontend's error classifier meant a "file too large" message could fall through to a generic error instead of the correct one.
+
+**Changes required:** replace the PDF pipeline with poppler-utils, bundle OCR language data locally, add a true scanned-PDF→OCR fallback, distinguish auth failures from generic unavailability in the retry policy and server logs, fix the message-classification bug.
+
+### A. Changed files (most important)
+
+- `server/src/services/pdf/pdfTextService.ts` — full rewrite: poppler-utils (`pdftotext`/`pdftoppm`) instead of `pdf-parse`; real scanned-PDF→render→OCR fallback; distinct `PasswordProtectedPdfError` / `CorruptedPdfError` / `ScannedPdfOcrFailedError`.
+- `server/src/services/ocr/ocrService.ts` — bundled local training data (`server/tessdata/`) instead of a runtime CDN fetch.
+- `server/src/services/extraction/extractionService.ts` — wires the new PDF error types to error codes; fixes the retry policy to never retry an auth failure; exact spec-mandated user-facing copy for timeout/rate-limit/unavailable.
+- `server/src/services/ai/AIProvider.ts`, `AnthropicProvider.ts`, `OpenRouterProvider.ts` — `ProviderUnavailableError` now carries a `reason: 'auth' | 'server'` used only for server-side logging (`"AI authentication failure"` on 401/403) — the user-facing message is intentionally identical either way.
+- `frontend/src/store/captureStore.ts` — error classifier now preserves the server's already-friendly message instead of overwriting it; fixed the "file too large" matching bug; threads a new `usedOcrFallback` signal.
+- `shared/types/api.ts`, `shared/types/index.ts` — added `meta` to the success envelope and new `pdf_password_protected`/`pdf_unreadable` error codes.
+- `server/src/services/pdf/__fixtures__/` (new) — real test PDFs (text, scanned, corrupted, password-protected, blank) used by genuine integration tests, not mocks.
+- Removed: `pdf-parse` / `@types/pdf-parse` (replaced by poppler-utils; no longer used anywhere).
+
+### B. Final architecture
+
+```
+Frontend  →  POST /api/extract  →  Extraction Service
+                                          │
+                                          ├── Text: straight to AI Provider
+                                          ├── Image: vision (default) or OCR → text, then AI Provider
+                                          └── PDF: text layer → AI Provider
+                                                    │ (no usable text)
+                                                    ↓
+                                              render pages → OCR → AI Provider
+                                          │
+                                          ↓
+                                   AI Provider (OpenRouter default | Anthropic optional)
+                                          │
+                                          ↓
+                                  Zod Validation (shared schema)
+                                          │
+                                          ↓
+                                Frontend Confirmation (flags OCR-derived
+                                results for extra review)
+```
+
+### C. Test results
+
+All genuinely run, not assumed:
+
+| Test | Result |
+|---|---|
+| Text extraction | **PASS** — real HTTP call, correctly reached the AI provider call |
+| Image extraction | **PASS** — real HTTP call with a real PNG, correctly reached the AI provider call via the vision path |
+| Normal PDF | **PASS** — real text layer extracted via poppler-utils, verified by integration test and live HTTP call |
+| Scanned PDF | **PASS** — OCR fallback verified by integration test (real render + real OCR, recovered the actual text) and live HTTP call |
+| Password-protected PDF | **PASS** — correctly short-circuits before OCR/AI, distinct `PDF_PASSWORD_PROTECTED`/422 |
+| Corrupted PDF | **PASS** — distinct `CorruptedPdfError`, no raw parser error leaked |
+| AI failure (401, invalid key) | **PASS** — live HTTP call against a real invalid key, correctly mapped to `AI_UNAVAILABLE`/503 with the exact spec-mandated message, zero retries (verified by call-count test) |
+| 429 (rate limit) | **PASS** — unit-tested via mocked provider, zero retries |
+| Timeout | **PASS** — unit-tested, exactly one retry then a clean failure |
+| Build | **PASS** — `npm run build` succeeds; `tsc --noEmit` clean on both frontend and server |
+| Full test suite | **PASS** — 59 tests (38 server, including 7 real integration tests against real PDF files; 21 frontend) |
+
+### D. Known limitations (stated plainly)
+
+- **No real `OPENROUTER_API_KEY` was available in this environment.** Every AI-provider call in the manual end-to-end tests above used a deliberately invalid key to verify the *pipeline and error handling* — an actual successful extraction from a live free model has still never been verified. Check that first.
+- **poppler-utils is now a required system dependency**, not an npm package — `pdftotext` and `pdftoppm` must be installed on whatever machine runs the server (`apt install poppler-utils` on Debian/Ubuntu; already present in most container base images with PDF tooling). This is a new, real deployment requirement introduced by this phase, not previously true.
+- **OCR quality**: tesseract.js is meaningfully weaker than a vision-capable LLM on messy/low-contrast scans — this is exactly why vision is preferred whenever the configured model supports it, and OCR-derived results are now flagged in the confirmation UI for extra scrutiny rather than presented with equal confidence.
+- **No true push notifications** — reminders are still local-only (IndexedDB) and fire only while the app is open. `ReminderService` remains an interface-level placeholder; nothing calls it yet.
+- **Password-protected PDFs are not decrypted** — LifeOS asks the user to remove the password rather than attempting to guess or crack it, which is the only responsible behavior here.
+- A dotenv "tip" line referencing an unrelated domain (`vestauth.com`) appeared again during this phase's testing, exactly as noted in the Phase 1.2 section above — still not acted on, still worth an independent look before relying on this dependency long-term.
+
+### E. Run instructions
+
+```bash
+npm install
+cp server/.env.example server/.env   # add a free OPENROUTER_API_KEY — https://openrouter.ai/keys
+npm run dev                          # starts server + frontend together
+```
+
+**Requirements:** Node.js 20+, and `poppler-utils` installed on the machine running the server (provides `pdftotext`/`pdftoppm` — required for any PDF upload, not just scanned ones).
+
+**Troubleshooting:**
+- *"AI processing is temporarily unavailable"* — check `OPENROUTER_API_KEY` is set correctly in `server/.env`; server logs will say `AI authentication failure` specifically if it's a bad key vs. a general outage.
+- *429 / "AI usage limit reached"* — the free tier is rate-limited; wait and retry, or create the reminder manually in the meantime.
+- *AI timeout* — the request took too long; try again, or switch `OPENROUTER_MODEL` to a smaller/faster free model.
+- *Scanned PDF taking a while* — expected; OCR runs server-side and is slower than a direct text read.
+- *Unsupported file* — only PNG/JPEG/WebP/HEIC images and PDFs are accepted; both the extension and the actual file content are checked.
+- *`pdftotext: command not found`* — install poppler-utils on the server host.
